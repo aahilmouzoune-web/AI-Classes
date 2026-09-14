@@ -1,6 +1,26 @@
 import random
-from colorama import init,Fore,Style
+
+try:
+    # colorama is optional for this script; the fallback below keeps it runnable
+    # when the dependency is not installed in the current environment.
+    from colorama import init, Fore, Style  # type: ignore[import-not-found]
+except ImportError:
+    def init(*args, **kwargs):
+        return None
+
+    class Fore:
+        RED = ""
+        BLUE = ""
+        YELLOW = ""
+        CYAN = ""
+        GREEN = ""
+        RESET = ""
+
+    class Style:
+        RESET_ALL = ""
+
 init(autoreset=True)
+
 def display_board(board):
     print()
     def colored(cell):
