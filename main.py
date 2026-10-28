@@ -1,46 +1,126 @@
-import cv2
-import numpy as np
-#Set up webcam capture
-cap=cv2.VideoCapture(0)
-if not cap.isOpened():
-    print("Error: Could not open webcam")
-    exit()
+# 1) Imports
+# - cv2 for webcam + drawing
+# - mediapipe for hand tracking
+# - numpy for distance + interpolation
+# - pycaw for system volume control (Windows)
+# - screen_brightness_control for brightness control
+
+# 2) Setup MediaPipe Hands
+# - Hands = mp.solutions.hands
+# - hands = Hands.Hands(min_detection_confidence=..., min_tracking_confidence=...)
+# - draw = mp.solutions.drawing_utils
+# - TH, IX = landmark IDs for THUMB_TIP and INDEX_FINGER_TIP
+
+# 3) Setup Volume Controller (Pycaw)
+# - Get default output device (or speakers fallback)
+# - Get EndpointVolume interface
+# - Read min/max volume range
+# - Wrap in try/except and exit on failure
+
+# 4) Setup Webcam
+# - cap = cv2.VideoCapture(0)
+# - Validate cap.isOpened(), else exit
+
+# 5) Create Window
+# - WIN = "Hand Gesture Control"
+# - cv2.namedWindow(WIN, cv2.WINDOW_NORMAL)
+
+# 6) Main Loop (while True)
+# - Read frame: ok, img = cap.read()
+# - Break if not ok
+# - Flip image for selfie view: img = cv2.flip(img, 1)
+# - Get h, w from img.shape
+# - Convert to RGB and run MediaPipe: res = hands.process(...)
+
+# 7) Hand Detection Check
+# - if res.multi_hand_landmarks and res.multi_handedness:
+
+# 8) For each detected hand
+# - label = handedness label ("Left" / "Right")
+# - draw landmarks on frame
+# - Extract thumb tip and index tip pixel positions using lm[TH], lm[IX]
+# - Draw circles + line between thumb and index
+# - Compute distance between those two points (np.hypot)
+
+# 9) Gesture Mapping (important note)
+# - Because the frame is flipped:
+#   label == "Left"  -> real RIGHT hand -> VOLUME
+#   label == "Right" -> real LEFT hand  -> BRIGHTNESS
+
+# 10) Volume Control Block (real RIGHT hand)
+# - Map distance -> volume range using np.interp
+# - Set system volume via volctl.SetMasterVolumeLevel(...)
+# - Draw volume bar + % text on left side
+
+# 11) Brightness Control Block (real LEFT hand)
+# - Map distance -> 0..100 brightness using np.interp
+# - sbc.set_brightness(int_value)
+# - Draw brightness bar + % text on right side
+
+# 12) Display Frame
+# - cv2.imshow(WIN, img)
+
+# 13) Exit Controls
+# - Read key with cv2.waitKey(1)
+# - Exit if ESC or 'q'
+# - Also exit if user clicks window close (X) using cv2.getWindowProperty
+
+# 14) Cleanup
+# - cap.release()
+# - cv2.destroyAllWindows()
+
+
+
+
+import cv2, mediapipe as mp, numpy as np
+from pycaw.pycaw import AudioUtilities, IAudioEndpointVolume
+import screen_brightness_control as sbc
+Hands = mp.solutions.hands
+hands = Hands.Hands(min_detection_confidence=0.7, min_tracking_confidence=0.7)
+draw = mp.solutions.drawing_utils
+TH, IX = Hands.HandLandmark.THUMB_TIP, Hands.HandLandmark.INDEX_FINGER_TIP
+try:
+    dev = AudioUtilities.GetDefaultOutputDevice() if hasattr(AudioUtilities, "GetDefaultOutputDevice") else AudioUtilities.GetSpeakers()
+    volctl = dev.EndpointVolume.QueryInterface(IAudioEndpointVolume)
+    minv, maxv = volctl.GetVolumeRange()[:2]
+except Exception as e:
+    print(f"Pycaw error: {e}"); exit()
+cap = cv2.VideoCapture(0)
+if not cap.isOpened(): print("Error: Webcam not accessible."); exit()
+WIN = "Hand Gesture Control"; cv2.namedWindow(WIN, cv2.WINDOW_NORMAL)
 while True:
-    #Capture frame-by-frame
-    ret,frame =cap.read()
-    if not ret:
-        print("Error:Failed to capture image")
+    ok, img = cap.read()
+    if not ok: break
+    img = cv2.flip(img, 1); h, w = img.shape[:2]
+    res = hands.process(cv2.cvtColor(img, cv2.COLOR_BGR2RGB))
+    if res.multi_hand_landmarks and res.multi_handedness:
+        for i, hand in enumerate(res.multi_hand_landmarks):
+            label = res.multi_handedness[i].classification[0].label
+            draw.draw_landmarks(img, hand, Hands.HAND_CONNECTIONS)
+            lm = hand.landmark
+            tp = (int(lm[TH].x*w), int(lm[TH].y*h)); ip = (int(lm[IX].x*w), int(lm[IX].y*h))
+            cv2.circle(img, tp, 10, (255,0,0), cv2.FILLED); cv2.circle(img, ip, 10, (255,0,0), cv2.FILLED)
+            cv2.line(img, tp, ip, (0,255,0), 3)
+            dist = float(np.hypot(ip[0]-tp[0], ip[1]-tp[1]))
+            if label == "Left":  # real RIGHT hand -> volume (frame is flipped)
+                v = np.interp(dist, [30,300], [minv,maxv])
+                try: volctl.SetMasterVolumeLevel(v, None)
+                except Exception as e: print(f"Volume error: {e}")
+                bar = int(np.interp(dist, [30,300], [400,150])); pct = int(np.interp(dist, [30,300], [0,100]))
+                cv2.rectangle(img, (50,150), (85,400), (255,0,0), 2); cv2.rectangle(img, (50,bar), (85,400), (255,0,0), cv2.FILLED)
+                cv2.putText(img, f"{pct}%", (40,450), cv2.FONT_HERSHEY_SIMPLEX, 1, (255,0,0), 3)
+            elif label == "Right":  # real LEFT hand -> brightness
+                b = int(np.interp(dist, [30,300], [0,100]))
+                try: sbc.set_brightness(b)
+                except Exception as e: print(f"Brightness error: {e}")
+                bar = int(np.interp(dist, [30,300], [400,150])); x1, x2 = w-85, w-50
+                cv2.rectangle(img, (x1,150), (x2,400), (0,255,0), 2); cv2.rectangle(img, (x1,bar), (x2,400), (0,255,0), cv2.FILLED)
+                cv2.putText(img, f"{b}%", (w-110,450), cv2.FONT_HERSHEY_SIMPLEX, 1, (0,255,0), 3)
+    cv2.imshow(WIN, img)
+    k = cv2.waitKey(1) & 0xFF
+    if k in (27, ord("q")): break
+    try:
+        if cv2.getWindowProperty(WIN, cv2.WND_PROP_VISIBLE) < 1: break
+    except cv2.error:
         break
-    #Convert to HSV for color filtering
-    hsv =cv2.cvtColor(frame,cv2.COLOR_BGR2HSV)
-    #Define the range for skin color in HSV
-    lower_skin=np.array([0,20,70],dtype=np.unit8)
-    upper_skin=np.array([20,255,255],dtype=np.unit8)
-    #Create a mask to detect skin color
-    mask=cv2.inRange(hsv,lower_skin,upper_skin)
-    #Apply  the mask to the frame
-    result=cv2.bitwise_and(frame,frame,mask=mask)
-    #Findcontours(hand shape)in the masked image
-    contours,_=cv2.findContours(mask,cv2.RETR_EXTERNAL,cv2.CHAIN_APPOX_SIMPLE)
-    #If contour are found,draw them
-    if contours:
-        max_contour=max(contours,key=cv2.countourArea)
-        #Get largest contour
-        if cv2.contourArea(max_contour)>500:
-            #Ignore small contour
-            #Draw the bounding box aound the detected hand
-            x,y,w,h =cv2.boundingRect(max_contour)
-            cv2.rectangle(frame, (x,y),(x+w,y+h),(0,255,0),2)
-            #Get the center of the hand for further tracking or interaction
-            center_x=int(x+w/2)
-            center_y=int(y+h/2)
-            cv2.circle(frame,(center_x,center_y),5,(0,0,255),-1)
-            #Red dot at center
-            #Display the orginal and result frames
-            cv2.imshow('Orignal Frame',frame)
-            cv2.imshow('Filtered Frame',result)
-            #Break the loop when'q' is pressed
-            if cv2.waitKey(1)&0xFF==ord('q'):
-                break
-cap.release()
-cv2.destroyAllWindows()
+cap.release(); cv2.destroyAllWindows()
